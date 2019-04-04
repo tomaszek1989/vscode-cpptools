@@ -113,10 +113,38 @@ interface CompileCommandsPaths {
     paths: string[];
 }
 
+interface QueryTranslationUnitSourceParams {
+    uri: string;
+}
+
+export enum QueryTranslationUnitSourceConfigDisposition {
+
+    /**
+     * No custom config needed for this file
+     */
+    ConfigNotNeeded = 0,
+
+    /**
+     * Custom config is needed for this file
+     */
+    ConfigNeeded = 1,
+
+    /**
+     * Custom config is needed for the ancestor file returned in uri
+     */
+    AncestorConfigNeeded = 2
+}
+
+interface QueryTranslationUnitSourceResult {
+    uri: string;
+    configDisposition: QueryTranslationUnitSourceConfigDisposition;
+}
+
 // Requests
 const NavigationListRequest: RequestType<TextDocumentIdentifier, string, void, void> = new RequestType<TextDocumentIdentifier, string, void, void>('cpptools/requestNavigationList');
 const GoToDeclarationRequest: RequestType<void, void, void, void> = new RequestType<void, void, void, void>('cpptools/goToDeclaration');
 const QueryCompilerDefaultsRequest: RequestType<QueryCompilerDefaultsParams, configs.CompilerDefaults, void, void> = new RequestType<QueryCompilerDefaultsParams, configs.CompilerDefaults, void, void>('cpptools/queryCompilerDefaults');
+const QueryTranslationUnitSourceRequest: RequestType<QueryTranslationUnitSourceParams, QueryTranslationUnitSourceResult, void, void> = new RequestType<QueryTranslationUnitSourceParams, QueryTranslationUnitSourceResult, void, void>('cpptools/queryTranslationUnitSource');
 const SwitchHeaderSourceRequest: RequestType<SwitchHeaderSourceParams, string, void, void> = new RequestType<SwitchHeaderSourceParams, string, void, void>('cpptools/didSwitchHeaderSource');
 
 // Notifications to the server
@@ -147,6 +175,7 @@ const DebugLogNotification:  NotificationType<OutputNotificationBody, void> = ne
 const InactiveRegionNotification:  NotificationType<InactiveRegionParams, void> = new NotificationType<InactiveRegionParams, void>('cpptools/inactiveRegions');
 const CompileCommandsPathsNotification:  NotificationType<CompileCommandsPaths, void> = new NotificationType<CompileCommandsPaths, void>('cpptools/compileCommandsPaths');
 const UpdateClangFormatPathNotification: NotificationType<string, void> = new NotificationType<string, void>('cpptools/updateClangFormatPath');
+const UpdateIntelliSenseCachePathNotification: NotificationType<string, void> = new NotificationType<string, void>('cpptools/updateIntelliSenseCachePath');
 
 class BlockingTask<T> {
     private dependency: BlockingTask<any>;
@@ -318,16 +347,6 @@ class DefaultClient implements Client {
                     this.configuration.CompileCommandsChanged((e) => this.onCompileCommandsChanged(e));
                     this.disposables.push(this.configuration);
 
-                    // The configurations will not be sent to the language server until the default include paths and frameworks have been set.
-                    // The event handlers must be set before this happens.
-                    languageClient.sendRequest(QueryCompilerDefaultsRequest, {}).then((compilerDefaults: configs.CompilerDefaults) => {
-                        this.configuration.CompilerDefaults = compilerDefaults;
-                        
-                        // Only register the real commands after the extension has finished initializing,
-                        // e.g. prevents empty c_cpp_properties.json from generation.
-                        registerCommands();
-                    });
-
                     this.languageClient = languageClient;
                     this.settingsTracker = getTracker(this.RootUri);
                     telemetry.logLanguageServerEvent("NonDefaultInitialCppSettings", this.settingsTracker.getUserModifiedSettings());
@@ -336,6 +355,16 @@ class DefaultClient implements Client {
                     // Listen for messages from the language server.
                     this.registerNotifications();
                     this.registerFileWatcher();
+
+                    // The configurations will not be sent to the language server until the default include paths and frameworks have been set.
+                    // The event handlers must be set before this happens.
+                    return languageClient.sendRequest(QueryCompilerDefaultsRequest, {}).then((compilerDefaults: configs.CompilerDefaults) => {
+                        this.configuration.CompilerDefaults = compilerDefaults;
+                            
+                        // Only register the real commands after the extension has finished initializing,
+                        // e.g. prevents empty c_cpp_properties.json from generation.
+                        registerCommands();
+                    });
                 },
                 (err) => {
                     this.isSupported = false;   // Running on an OS we don't support yet.
@@ -414,7 +443,7 @@ class DefaultClient implements Client {
                 intelliSenseEngine: settings.intelliSenseEngine,
                 intelliSenseEngineFallback: settings.intelliSenseEngineFallback,
                 intelliSenseCacheDisabled: intelliSenseCacheDisabled,
-                intelliSenseCachePath : settings.intelliSenseCachePath,
+                intelliSenseCachePath : util.resolveVariables(settings.intelliSenseCachePath, this.AdditionalEnvironment),
                 intelliSenseCacheSize : settings.intelliSenseCacheSize,
                 autocomplete: settings.autoComplete,
                 errorSquiggles: settings.errorSquiggles,
@@ -475,6 +504,10 @@ class DefaultClient implements Client {
             if (changedSettings["clang_format_path"]) {
                 let settings: CppSettings = new CppSettings(this.RootUri);
                 this.languageClient.sendNotification(UpdateClangFormatPathNotification, util.resolveVariables(settings.clangFormatPath, this.AdditionalEnvironment));
+            }
+            if (changedSettings["intelliSenseCachePath"]) {
+                let settings: CppSettings = new CppSettings(this.RootUri);
+                this.languageClient.sendNotification(UpdateIntelliSenseCachePathNotification, util.resolveVariables(settings.intelliSenseCachePath, this.AdditionalEnvironment));
             }
             this.configuration.onDidChangeSettings();
             telemetry.logLanguageServerEvent("CppSettingsChange", changedSettings, null);
@@ -604,6 +637,15 @@ class DefaultClient implements Client {
     }
 
     public async provideCustomConfiguration(document: vscode.TextDocument): Promise<void> {
+        let params: QueryTranslationUnitSourceParams = {
+            uri: document.uri.toString()
+        };
+        let response: QueryTranslationUnitSourceResult = await this.requestWhenReady(() => this.languageClient.sendRequest(QueryTranslationUnitSourceRequest, params));
+        if (response.configDisposition === QueryTranslationUnitSourceConfigDisposition.ConfigNotNeeded) {
+            return Promise.resolve();
+        }
+
+        let tuUri: vscode.Uri = vscode.Uri.parse(response.uri);
         let tokenSource: CancellationTokenSource = new CancellationTokenSource();
         let providers: CustomConfigurationProviderCollection = getCustomConfigProviders();
         if (providers.size === 0) {
@@ -628,8 +670,8 @@ class DefaultClient implements Client {
                     }
 
                     providerName = provider.name;
-                    if (await provider.canProvideConfiguration(document.uri, tokenSource.token)) {
-                        return provider.provideConfigurations([document.uri], tokenSource.token);
+                    if (await provider.canProvideConfiguration(tuUri, tokenSource.token)) {
+                        return provider.provideConfigurations([tuUri], tokenSource.token);
                     }
                 }
             } catch (err) {
@@ -642,6 +684,11 @@ class DefaultClient implements Client {
             (configs: SourceFileConfigurationItem[]) => {
                 if (configs && configs.length > 0) {
                     this.sendCustomConfigurations(configs, true);
+                    if (response.configDisposition === QueryTranslationUnitSourceConfigDisposition.AncestorConfigNeeded) {
+                        // replacing uri with original uri
+                        let newConfig: SourceFileConfigurationItem =  { uri: document.uri, configuration: configs[0].configuration };
+                        this.sendCustomConfigurations([newConfig], true);
+                    }
                 }
             },
             (err) => {
@@ -649,7 +696,7 @@ class DefaultClient implements Client {
                     return;
                 }
                 let settings: CppSettings = new CppSettings(this.RootUri);
-                if (settings.configurationWarnings === "Enabled" && !this.isExternalHeader(document) && !vscode.debug.activeDebugSession) {
+                if (settings.configurationWarnings === "Enabled" && !this.isExternalHeader(document.uri) && !vscode.debug.activeDebugSession) {
                     const dismiss: string = "Dismiss";
                     const disable: string = "Disable Warnings";
                     let message: string = `'${providerName}' is unable to provide IntelliSense configuration information for '${document.uri.fsPath}'. ` +
@@ -670,8 +717,8 @@ class DefaultClient implements Client {
             });
     }
 
-    private isExternalHeader(document: vscode.TextDocument): boolean {
-        return util.isHeader(document) && !document.uri.toString().startsWith(this.RootUri.toString());
+    private isExternalHeader(uri: vscode.Uri): boolean {
+        return util.isHeader(uri) && !uri.toString().startsWith(this.RootUri.toString());
     }
 
     private getCustomConfigurationProviderId(): Thenable<string|undefined> {
@@ -1038,7 +1085,7 @@ class DefaultClient implements Client {
             return;
         }
 
-        let ask: PersistentState<boolean> = new PersistentState<boolean>("CPP.showCompileCommandsSelection", true);
+        let ask: PersistentFolderState<boolean> = new PersistentFolderState<boolean>("CPP.showCompileCommandsSelection", true, this.RootPath);
         if (!ask.Value) {
             return;
         }
@@ -1159,6 +1206,9 @@ class DefaultClient implements Client {
         }).then(() => {
             let newProvider: string = this.configuration.CurrentConfigurationProvider;
             if (this.configurationProvider !== newProvider) {
+                if (this.configurationProvider) {
+                    this.clearCustomConfigurations();
+                }
                 this.configurationProvider = newProvider;
                 this.updateCustomConfigurations();
                 this.updateCustomBrowseConfiguration();
