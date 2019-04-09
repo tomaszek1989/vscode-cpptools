@@ -1422,6 +1422,7 @@
   },
   "scripts": {
     "compile": "npm run vscode:prepublish",
+    "compileDev": "webpack --mode development",
     "generateOptionsSchema": "gulp generateOptionsSchema",
     "integrationTests": "gulp integrationTests",
     "postinstall": "node ./node_modules/vscode/bin/install",
@@ -1430,9 +1431,8 @@
     "test": "gulp allTests",
     "tslint": "gulp tslint",
     "unitTests": "gulp unitTests",
-    "vscode:prepublish": "node ./src/Support/prepublish.js",
-    "watch": "tsc -watch -p ./",
-    "webpack": "webpack --mode development"
+    "vscode:prepublish": "node ./src/Support/prepublish.js && webpack --mode production",
+    "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
     "@types/mocha": "^5.2.6",
