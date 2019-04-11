@@ -1432,7 +1432,7 @@
     "tslint": "gulp tslint",
     "unitTests": "gulp unitTests",
     "vscode:prepublish": "node ./src/Support/prepublish.js && webpack --mode production",
-    "watch": "tsc -watch -p ./"
+    "watch": "webpack --watch --mode development"
   },
   "devDependencies": {
     "@types/mocha": "^5.2.6",

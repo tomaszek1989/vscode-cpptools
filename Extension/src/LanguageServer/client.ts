@@ -301,7 +301,6 @@ class DefaultClient implements Client {
 
     constructor(allClients: ClientCollection, workspaceFolder?: vscode.WorkspaceFolder) {
         try {
-            console.log('create LanguageClient');
             let languageClient: LanguageClient = this.createLanguageClient(allClients, workspaceFolder);
             languageClient.registerProposedFeatures();
             languageClient.start();  // This returns Disposable, but doesn't need to be tracked because we call .stop() explicitly in our dispose()
@@ -313,7 +312,6 @@ class DefaultClient implements Client {
             // requests/notifications are deferred until this.languageClient is set.
             this.queueBlockingTask(() => languageClient.onReady().then(
                 () => {
-                    console.log('client ready');
                     this.configuration = new configs.CppProperties(this.RootUri);
                     this.configuration.ConfigurationsChanged((e) => this.onConfigurationsChanged(e));
                     this.configuration.SelectionChanged((e) => this.onSelectedConfigurationChanged(e));
@@ -324,7 +322,6 @@ class DefaultClient implements Client {
                     // The event handlers must be set before this happens.
                     languageClient.sendRequest(QueryCompilerDefaultsRequest, {}).then((compilerDefaults: configs.CompilerDefaults) => {
                         this.configuration.CompilerDefaults = compilerDefaults;
-                        console.log('compiler defaults received');
                         
                         // Only register the real commands after the extension has finished initializing,
                         // e.g. prevents empty c_cpp_properties.json from generation.
@@ -339,7 +336,6 @@ class DefaultClient implements Client {
                     // Listen for messages from the language server.
                     this.registerNotifications();
                     this.registerFileWatcher();
-                    console.log('registered stuff');
                 },
                 (err) => {
                     this.isSupported = false;   // Running on an OS we don't support yet.
